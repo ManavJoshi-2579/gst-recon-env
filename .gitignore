@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+*.bak
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.DS_Store
+server_stdout.log
+server_stderr.log
+uv.lock.invalid_placeholder
+uv.lock
