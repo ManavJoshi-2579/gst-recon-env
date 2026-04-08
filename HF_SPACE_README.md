@@ -1,6 +1,6 @@
 ---
-title: GST-Recon-Env
-emoji: "📄"
+title: GST-Recon-Env: GST Invoice Reconciliation RL Environment
+emoji: ":page_facing_up:"
 colorFrom: blue
 colorTo: indigo
 sdk: docker
@@ -10,7 +10,7 @@ pinned: false
 
 # GST-Recon-Env
 
-GST-Recon-Env is a Docker-based FastAPI Space for GST invoice reconciliation.
+GST-Recon-Env is a Docker-based OpenEnv and FastAPI environment for GST invoice reconciliation, mismatch detection, and ITC decision-making.
 
 ## Endpoints
 
