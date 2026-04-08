@@ -11,6 +11,7 @@ class GSTReconEnv:
         self.reset()
 
     def reset(self) -> Observation:
+        random.seed(42)
         self.episode_id = str(uuid.uuid4())
         self.step_count = 0
         self.last_reward = 0.0
@@ -46,14 +47,13 @@ class GSTReconEnv:
         obs.step_count = 0
         return obs
 
-    @property
     def state(self) -> Dict:
         return {
             "episode_id": self.episode_id,
             "step_count": self.step_count,
             "current_idx": self.current_idx,
             "risk_score": self.risk_score,
-            "processed_invoices": len(self.processed_invoices),
+            "processed_invoices": list(self.processed_invoices),
             "correct_matches": self.correct_matches,
             "wrong_itc_claims": self.wrong_itc_claims,
             "invoices": [inv.model_dump() for inv in self.invoices],
@@ -61,6 +61,7 @@ class GSTReconEnv:
             "matched": self.matched,
             "mismatches": self.mismatches,
             "claimed_itc": self.claimed_itc,
+            "task_difficulty": self.task,
             "task_name": self.task
         }
 
@@ -150,9 +151,10 @@ class GSTReconEnv:
         self._update_warnings()
         self.last_reward = reward
         self.last_error = error
-        self.final_score = self._calculate_grader_score() if done else self._current_score_estimate()
+        final_score = self.compute_score() if done else 0.0
+        self.final_score = round(final_score, 3)
         self.last_info = {
-            "score": self.final_score,
+            "score": round(final_score, 3),
             "risk": self.risk_score,
             "processed": len(self.processed_invoices),
         }
@@ -355,6 +357,17 @@ class GSTReconEnv:
             return self.grade_medium()
         return self.grade_hard()
 
+    def compute_score(self) -> float:
+        if self.task == "easy":
+            score = self.correct_matches / max(1, len(self.invoices))
+        elif self.task == "medium":
+            penalty = self.wrong_itc_claims * 0.2
+            score = (self.correct_matches / max(1, len(self.invoices))) - penalty
+        else:
+            risk_penalty = min(self.risk_score, 1.0)
+            score = (self.correct_matches / max(1, len(self.invoices))) * (1 - risk_penalty)
+        return min(max(score, 0.0), 1.0)
+
     def _diversity_penalty(self) -> float:
         if not self.action_history:
             return 0.0
@@ -380,5 +393,4 @@ class GSTReconEnv:
                 self.warnings.append("FRAUD MATCHED")
 
     def _calculate_grader_score(self) -> float:
-        score = self._task_grade() - self._diversity_penalty()
-        return round(max(0.0, min(score, 0.9)), 2)
+        return round(self.compute_score(), 3)

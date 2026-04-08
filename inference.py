@@ -9,6 +9,8 @@ from client import OpenEnvClient
 from server.gst_recon_env_environment import GSTReconEnv
 from server.models import Action, ActionType
 
+MAX_STEPS = 50
+
 class LocalEnvClient:
     def __init__(self):
         self.env = None
@@ -23,11 +25,12 @@ class LocalEnvClient:
 
         parsed_action = Action.model_validate(action)
         obs, reward, done, info = self.env.step(parsed_action)
+        score = _clamp_score(info.get("score") if done else 0.0)
         return {
             "observation": obs.model_dump(),
             "reward": reward,
             "done": done,
-            "score": self.env._calculate_grader_score() if done else None,
+            "score": score if done else None,
             "error": self.env.last_error,
             "info": info,
         }
@@ -66,6 +69,9 @@ def _heuristic_action(obs):
         return {"type": "match", "invoice_id": invoice_id}
     return {"type": "reject", "invoice_id": invoice_id, "reason": "not found in GSTR-2B"}
 
+def _clamp_score(score):
+    return min(max(float(score or 0.0), 0.0), 1.0)
+
 async def main():
     api_base = os.getenv("API_BASE_URL", "http://localhost:8000")
     model_name = os.getenv("MODEL_NAME", "gpt-4o-mini")
@@ -93,7 +99,7 @@ async def main():
         success = False
         result = {"score": 0.0}
 
-        while step_n < 50:
+        while step_n < MAX_STEPS:
             step_n += 1
 
             # Generate action using LLM
@@ -127,7 +133,8 @@ async def main():
             print(f"[STEP] step={step_n} action={action_str} reward={reward:.2f} done={result['done']} error={result.get('error') or 'null'}")
 
             if result["done"]:
-                success = (result.get("score") or 0.0) >= 0.7
+                result["score"] = _clamp_score(result.get("score"))
+                success = result["score"] >= 0.7
                 break
 
         print(f"[END] success={success} steps={step_n} score={result.get('score') or 0.0} rewards={','.join(f'{r:.2f}' for r in rewards)}")

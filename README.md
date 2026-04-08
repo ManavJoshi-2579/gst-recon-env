@@ -2,48 +2,74 @@
 
 GST-Recon-Env is an OpenEnv benchmark for Indian GST invoice reconciliation. Agents review purchase invoices against GSTR-2B entries, identify mismatches and fraud signals, claim eligible Input Tax Credit (ITC), and submit a final compliance report.
 
-The environment is designed for reinforcement learning and agent evaluation: rewards are state-driven, task graders are deterministic, and repeated single-action strategies are penalized.
+The environment is built for reinforcement learning evaluation: rewards are state-driven, task graders are deterministic, and repetitive single-action strategies are penalized.
 
-## Highlights
+## Motivation
 
-- OpenEnv validation passes: `openenv validate`
-- Deterministic task graders for easy, medium, and hard modes
-- State-driven step logic: rewards use the current invoice, not the submitted `invoice_id`
-- Risk-aware ITC dynamics: wrong ITC claims increase `risk_score` and reduce final score
-- Anti-exploit scoring: always-reject and repeated-action policies are penalized
-- Structured step metadata: `score`, `risk`, and `processed`
-- FastAPI server mode plus local inference fallback
+GST reconciliation is a real compliance workflow for Indian businesses. Incorrect matching, invalid GSTINs, missing GSTR-2B entries, and wrong ITC claims can create audit risk and financial penalties. GST-Recon-Env turns this workflow into a compact RL benchmark with realistic compliance tradeoffs.
 
-## Tasks
+## Task Difficulty
 
-![alt text](image.png)		
-Task 	Invoices 	Mismatch Rate	Focus
-Easy	3	0.1	Basic invoice and GSTR-2B matching
-Medium	5	0.3	Mismatches, missing entries , ITC care 
- Hard	8	0.5	Fraud signals ,e -invoice failures , risk-aware claims 
+![Task difficulty overview](assets/Tasks.png)
 
+| Task | Invoices | Mismatch Probability | Focus |
+|------|----------|----------------------|-------|
+| easy | 3 | 0.10 | Basic invoice and GSTR-2B matching |
+| medium | 5 | 0.30 | Mismatches, missing entries, ITC care |
+| hard | 8 | 0.50 | Fraud signals, e-invoice failures, risk-aware claims |
 
+## Action Space
 
-## Actions
+![Action space overview](assets/Actions.png)
 
 | Action | Correct Reward | Wrong Reward | Notes |
 |--------|----------------|--------------|-------|
-| `match` | `+0.3` | `-0.3` | Correct when invoice fully matches GSTR-2B and is compliant |
-| `reject` | `+0.2` | `-0.3` | Correct for fraud, missing, mismatched, or non-compliant invoices |
+| `match` | `+0.3` | `-0.3` | Correct when the current invoice fully matches GSTR-2B and is compliant |
+| `reject` | `+0.2` | `-0.3` | Correct for missing, mismatched, fraudulent, or non-compliant invoices |
 | `claim_itc` | `+0.5` | `-0.7` | Wrong claims increase `risk_score` |
 | `query_vendor` | shaped | shaped | Useful for uncertain invalid invoices |
-| `submit_report` | accuracy based | risk penalized | Ends the episode |
+| `submit_report` | accuracy based | risk penalized | Ends the episode and triggers final grading |
 
-Additional penalties:
+The reward logic ignores the submitted `invoice_id` for correctness and always evaluates the current state invoice.
 
-- Duplicate invoice/action: `-0.3`
-- Repeated same decision pattern: `-0.1`
-- Loop beyond invoice set: `-0.2`
-- Dominant single-action strategy: final score penalty
+## Observation Space
 
-## Deterministic Graders
+Each observation contains:
 
-The final score is task-specific:
+- `current_invoice`
+- `available_gstr2b`
+- `matched`
+- `mismatches`
+- `current_itc`
+- `total_itc_possible`
+- `progress`
+- `warnings`
+- `step_count`
+
+HTTP step responses also include structured metadata:
+
+```json
+{
+  "info": {
+    "score": 0.0,
+    "risk": 0.0,
+    "processed": 1
+  }
+}
+```
+
+## Reward Design
+
+Additional shaping prevents trivial exploitation:
+
+- Duplicate invoice/action penalty: `-0.3`
+- Repeated same decision penalty: `-0.1`
+- Loop beyond invoice set penalty: `-0.2`
+- Wrong ITC claims increase risk and reduce hard-mode score
+
+## Grader Logic
+
+Scores are deterministic and normalized to `[0.0, 1.0]`:
 
 ```python
 def grade_easy(state):
@@ -58,37 +84,17 @@ def grade_hard(state):
     return max(0.0, (state.correct_matches / len(state.invoices)) * (1 - risk_penalty))
 ```
 
-In the implementation, these are exposed as `grade_easy()`, `grade_medium()`, `grade_hard()`, and `_calculate_grader_score()` on `GSTReconEnv`.
+## Baseline Results
 
-## Observation
+Recent local run:
 
-Each observation contains:
-
-- `current_invoice`
-- `available_gstr2b`
-- `matched`
-- `mismatches`
-- `current_itc`
-- `total_itc_possible`
-- `progress`
-- `warnings`
-- `step_count`
-
-HTTP step responses also include:
-
-```json
-{
-  "info": {
-    "score": 0.0,
-    "risk": 0.0,
-    "processed": 1
-  }
-}
+```text
+[END] success=True steps=8 score=0.76 rewards=0.20,0.20,0.10,0.30,0.20,0.20,0.10,0.30
 ```
 
-## Quickstart
+Reject-only strategies are penalized and are not competitive.
 
-Install dependencies:
+## Setup
 
 ```powershell
 uv sync
@@ -106,44 +112,55 @@ Expected:
 [OK] gst_recon: Ready for multi-mode deployment
 ```
 
-Run inference locally. If no server is running, `inference.py` falls back to the local environment:
+## Run Instructions
+
+Local inference, with automatic local-environment fallback if no server is running:
 
 ```powershell
 .\.venv\Scripts\python.exe inference.py
 ```
 
-Run server mode:
+Server mode:
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn server.app:app --host 0.0.0.0 --port 8000
+.\.venv\Scripts\python.exe -m server.app
 ```
 
-Then in another terminal:
+Health check:
 
 ```powershell
-.\.venv\Scripts\python.exe inference.py
+curl http://localhost:8000/
 ```
 
-## Current Validation Snapshot
+Tasks endpoint:
 
-Recent local checks:
-
-```text
-inference.py score: ~0.9
-reject-only policy max score in sample: 0.46
-task mismatch rates: easy ~0.09, medium ~0.27, hard ~0.43
-openenv validate: [OK] gst_recon: Ready for multi-mode deployment
+```powershell
+curl http://localhost:8000/tasks
 ```
 
-These checks show that the baseline can score strongly while a lazy always-reject strategy is not competitive.
+## Deployment Instructions
 
-## Deployment
+Docker build:
 
-The project exposes the required server entry point:
+```powershell
+docker build -t gst-recon-env .
+```
+
+Docker run:
+
+```powershell
+docker run --rm -p 8000:8000 gst-recon-env
+```
+
+The project exposes the OpenEnv server entry point:
 
 ```toml
 [project.scripts]
 server = "server.app:main"
 ```
 
-For Hugging Face or OpenEnv deployment, validate first, then launch the FastAPI server with the command above.
+For Hugging Face Spaces, deploy the repository and run:
+
+```powershell
+python -m server.app
+```

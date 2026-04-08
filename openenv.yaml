@@ -1,46 +1,19 @@
 ﻿name: gst_recon_env
-display_name: GST-Recon-Env
-description: |
-  OpenEnv benchmark for Indian GST invoice reconciliation. Agents reconcile purchase
-  invoices against GSTR-2B, detect mismatches and fraud signals, claim eligible ITC,
-  and submit a risk-aware compliance report.
+description: GST invoice reconciliation environment
 
 tasks:
-  - name: easy
-    difficulty: easy
-    description: Basic invoice and GSTR-2B matching with low mismatch probability.
-    baseline_score: 0.90
-  - name: medium
-    difficulty: medium
-    description: Moderate mismatches, missing entries, and ITC decision pressure.
-    baseline_score: 0.80
-  - name: hard
-    difficulty: hard
-    description: High mismatch probability, fraud signals, e-invoice failures, and risk-aware scoring.
-    baseline_score: 0.75
+  - easy
+  - medium
+  - hard
+
+reward_range: [0.0, 1.0]
 
 action_space:
-  - type: match
-    description: Match the current invoice to GSTR-2B when it is valid and compliant.
-  - type: reject
-    description: Reject the current invoice when it is missing, mismatched, fraudulent, or non-compliant.
-  - type: claim_itc
-    description: Claim Input Tax Credit for the current invoice when it is valid and eligible.
-  - type: query_vendor
-    description: Query vendor details for uncertain invoices.
-  - type: submit_report
-    description: Finalize the reconciliation report and trigger final grading.
+  action_type: string
+  invoice_id: string
 
 observation_space:
-  current_invoice: Current invoice under review.
-  available_gstr2b: Available GSTR-2B entries for reconciliation.
-  matched: Invoice IDs accepted as valid matches.
-  mismatches: Invoice IDs flagged as mismatched or rejected.
-  current_itc: Current claimed Input Tax Credit.
-  total_itc_possible: Maximum eligible ITC in the episode.
-  progress: Episode progress from 0.0 to 1.0.
-  warnings: Compliance and risk warnings.
-  step_count: Number of processed steps.
-
-reward_range: [-0.70, 1.50]
-max_episode_steps: 9
+  current_invoice: object
+  mismatch_flags: list
+  risk_score: float
+  progress: float

@@ -11,6 +11,10 @@ app = FastAPI(title="GST-Recon-Env Server")
 env = None
 task_name: Optional[str] = None
 
+@app.get("/")
+def health():
+    return {"status": "ok"}
+
 class StepRequest(BaseModel):
     action: Action
 
@@ -53,7 +57,7 @@ def step(req: StepRequest):
 def get_state():
     if env is None:
         raise HTTPException(400, "No active episode")
-    return env.state
+    return env.state()
 
 @app.get("/tasks")
 def get_tasks():
