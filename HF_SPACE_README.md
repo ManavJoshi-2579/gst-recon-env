@@ -1,5 +1,5 @@
 ---
-title: GST-Recon-Env: GST Invoice Reconciliation RL Environment
+title: "GST-Recon-Env: GST Invoice Reconciliation RL Environment"
 emoji: ":page_facing_up:"
 colorFrom: blue
 colorTo: indigo
