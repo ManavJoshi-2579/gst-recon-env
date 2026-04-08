@@ -221,3 +221,37 @@ For Hugging Face Spaces, deploy the repository and run:
 ```powershell
 python -m server.app
 ```
+
+## Hugging Face Deployment
+
+This repository is ready for a Hugging Face Docker Space.
+
+Recommended setup in Hugging Face Spaces:
+
+1. Create a new Space.
+2. Choose `Docker` as the Space SDK.
+3. Upload this repository or connect the GitHub repository.
+4. In the Space settings, set the app port to `8000`.
+5. Let the Space build using the existing [Dockerfile](./Dockerfile).
+
+Why this works:
+
+- The API server listens on `0.0.0.0`
+- The server now supports the `PORT` environment variable, with `8000` as the default
+- The Docker image starts with `python -m server.app`
+
+After deployment, test:
+
+```text
+https://<your-space-name>.hf.space/
+https://<your-space-name>.hf.space/docs
+https://<your-space-name>.hf.space/tasks
+```
+
+Expected root response:
+
+```json
+{"status":"ok"}
+```
+
+If you want a Hugging Face Space README front matter block, use the template in `HF_SPACE_README.md`.

@@ -3,6 +3,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
+import os
 import uvicorn
 from .models import Action, Observation
 
@@ -151,7 +152,8 @@ def get_tasks():
 
 def main():
     """Entry point for [project.scripts]"""
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 def run_server():
     main()
