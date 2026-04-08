@@ -1,4 +1,5 @@
 ﻿name: gst_recon_env
+entrypoint: server.app:app
 description: GST invoice reconciliation environment
 
 tasks:

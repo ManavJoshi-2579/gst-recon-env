@@ -89,7 +89,7 @@ def grade_hard(state):
 Recent local run:
 
 ```text
-[END] success=True steps=8 score=0.76 rewards=0.20,0.20,0.10,0.30,0.20,0.20,0.10,0.30
+[END] success=True steps=8 score=~0.86 rewards=0.20,0.20,0.10,0.30,0.20,0.20,0.10,0.30
 ```
 
 Reject-only strategies are penalized and are not competitive.

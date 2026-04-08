@@ -5,6 +5,11 @@ from pydantic import ValidationError
 import uuid
 from .models import Action, Observation, Invoice, GSTR2BEntry, ActionType
 
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
 class GSTReconEnv:
     def __init__(self, task: str = "easy"):
         self.task = task
@@ -12,6 +17,8 @@ class GSTReconEnv:
 
     def reset(self) -> Observation:
         random.seed(42)
+        if np is not None:
+            np.random.seed(42)
         self.episode_id = str(uuid.uuid4())
         self.step_count = 0
         self.last_reward = 0.0
@@ -64,6 +71,9 @@ class GSTReconEnv:
             "task_difficulty": self.task,
             "task_name": self.task
         }
+
+    def close(self):
+        return None
 
     def step(self, action: Action) -> Tuple[Observation, float, bool, Dict]:
         reward = 0.0

@@ -116,7 +116,7 @@ async def main():
                 response = openai_client.chat.completions.create(
                     model=model_name,
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1
+                    temperature=0.0
                 )
                 action_json = response.choices[0].message.content.strip()
                 action = json.loads(action_json)
