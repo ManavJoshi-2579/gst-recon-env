@@ -10,6 +10,12 @@ from server.gst_recon_env_environment import GSTReconEnv
 from server.models import Action, ActionType
 
 MAX_STEPS = 50
+TASK_NAME = "hard"
+ENV_NAME = "gst_recon_env"
+
+
+def _bool_str(value):
+    return "true" if value else "false"
 
 class LocalEnvClient:
     def __init__(self):
@@ -78,7 +84,7 @@ async def main():
     hf_token = os.getenv("HF_TOKEN")
     random.seed(int(os.getenv("SEED", "42")))
     
-    print(f"[START] task=hard env=gst_recon_env model={model_name}")
+    print(f"[START] task={TASK_NAME} env={ENV_NAME} model={model_name}")
     _ = hf_token
     
     client = OpenEnvClient(base_url=api_base)
@@ -87,12 +93,11 @@ async def main():
     try:
         # Reset environment
         try:
-            obs = await client.reset(task="hard")
+            obs = await client.reset(task=TASK_NAME)
         except httpx.ConnectError:
             await client._client.aclose()
-            print(f"[INFO] server unavailable at {api_base}; using local environment")
             client = LocalEnvClient()
-            obs = await client.reset(task="hard")
+            obs = await client.reset(task=TASK_NAME)
 
         step_n = 0
         rewards = []
@@ -130,14 +135,21 @@ async def main():
             rewards.append(reward)
 
             action_str = f"{action.get('type', 'unknown')}(id={action.get('invoice_id', 'N/A')})"
-            print(f"[STEP] step={step_n} action={action_str} reward={reward:.2f} done={result['done']} error={result.get('error') or 'null'}")
+            print(
+                f"[STEP] step={step_n} action={action_str} reward={reward:.2f} "
+                f"done={_bool_str(result['done'])} error={result.get('error') or 'null'}"
+            )
 
             if result["done"]:
                 result["score"] = _clamp_score(result.get("score"))
                 success = result["score"] >= 0.7
                 break
 
-        print(f"[END] success={success} steps={step_n} score={result.get('score') or 0.0} rewards={','.join(f'{r:.2f}' for r in rewards)}")
+        rewards_str = "[" + ", ".join(f"{r:.2f}" for r in rewards) + "]"
+        print(
+            f"[END] success={_bool_str(success)} steps={step_n} "
+            f"score={float(result.get('score') or 0.0):.1f} rewards={rewards_str}"
+        )
     finally:
         await client.aclose() if hasattr(client, "aclose") else await client._client.aclose()
 
