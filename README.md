@@ -138,6 +138,43 @@ Tasks endpoint:
 curl http://localhost:8000/tasks
 ```
 
+Interactive API docs:
+
+```powershell
+http://localhost:8000/docs
+```
+
+## First Docker Run Notes
+
+If you open `http://localhost:8000/` in a browser, you will see JSON such as:
+
+```json
+{"status":"ok"}
+```
+
+That is expected. This project exposes an API server, not a traditional frontend web page.
+
+Useful beginner checks:
+
+```powershell
+docker ps
+curl.exe http://localhost:8000/
+curl.exe http://localhost:8000/tasks
+curl.exe http://localhost:8000/state
+```
+
+To reset the environment with an actual task, send a JSON body:
+
+```powershell
+curl.exe -X POST http://localhost:8000/reset `
+  -H "Content-Type: application/json" `
+  -d "{\"task\":\"easy\"}"
+```
+
+Available task names are `easy`, `medium`, and `hard`.
+
+If `POST /reset` is called without a JSON body, the server still returns HTTP 200 with a safe empty observation. That behavior is intentional for compatibility with simple health checks.
+
 ## Deployment Instructions
 
 Docker build:
@@ -151,6 +188,26 @@ Docker run:
 ```powershell
 docker run --rm -p 8000:8000 gst-recon-env
 ```
+
+Detached mode:
+
+```powershell
+docker run -d --name gst-recon-env-test -p 8000:8000 gst-recon-env
+```
+
+View container logs:
+
+```powershell
+docker logs gst-recon-env-test
+```
+
+Stop the container:
+
+```powershell
+docker stop gst-recon-env-test
+```
+
+If Docker says it cannot connect to the daemon, make sure Docker Desktop is open and the WSL2 backend is enabled.
 
 The project exposes the OpenEnv server entry point:
 

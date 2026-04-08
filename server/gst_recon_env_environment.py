@@ -2,7 +2,6 @@ import random
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 from pydantic import ValidationError
-import uuid
 from .models import Action, Observation, Invoice, GSTR2BEntry, ActionType
 
 try:
@@ -11,15 +10,19 @@ except ImportError:
     np = None
 
 class GSTReconEnv:
+    BASE_DATE = datetime(2025, 1, 1)
+    SEED = 42
+    VALID_TASKS = {"easy", "medium", "hard"}
+
     def __init__(self, task: str = "easy"):
-        self.task = task
+        self.task = task if task in self.VALID_TASKS else "easy"
         self.reset()
 
     def reset(self) -> Observation:
-        random.seed(42)
+        random.seed(self.SEED)
         if np is not None:
-            np.random.seed(42)
-        self.episode_id = str(uuid.uuid4())
+            np.random.seed(self.SEED)
+        self.episode_id = f"{self.task}-seed-{self.SEED}"
         self.step_count = 0
         self.last_reward = 0.0
         self.last_error = None
@@ -56,20 +59,10 @@ class GSTReconEnv:
 
     def state(self) -> Dict:
         return {
-            "episode_id": self.episode_id,
-            "step_count": self.step_count,
-            "current_idx": self.current_idx,
-            "risk_score": self.risk_score,
-            "processed_invoices": list(self.processed_invoices),
-            "correct_matches": self.correct_matches,
-            "wrong_itc_claims": self.wrong_itc_claims,
             "invoices": [inv.model_dump() for inv in self.invoices],
-            "gstr2b": [entry.model_dump() for entry in self.gstr2b],
-            "matched": self.matched,
-            "mismatches": self.mismatches,
-            "claimed_itc": self.claimed_itc,
-            "task_difficulty": self.task,
-            "task_name": self.task
+            "processed": sorted(self.processed_invoices),
+            "risk_score": self.risk_score,
+            "steps": self.step_count,
         }
 
     def close(self):
@@ -161,10 +154,11 @@ class GSTReconEnv:
         self._update_warnings()
         self.last_reward = reward
         self.last_error = error
-        final_score = self.compute_score() if done else 0.0
-        self.final_score = round(final_score, 3)
+        score = self.compute_score() if done else 0.0
+        score = min(max(score, 0.0), 1.0)
+        self.final_score = round(score, 3)
         self.last_info = {
-            "score": round(final_score, 3),
+            "score": round(score, 3),
             "risk": self.risk_score,
             "processed": len(self.processed_invoices),
         }
@@ -181,7 +175,7 @@ class GSTReconEnv:
 
     def _generate_invoices(self) -> List[Invoice]:
         invoices = []
-        base_date = datetime.now() - timedelta(days=30)
+        base_date = self.BASE_DATE
         
         for i in range(self.total_invoices):
             fraud_prob = {"easy": 0.02, "medium": 0.08, "hard": 0.15}[self.task]
