@@ -1,59 +1,21 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "gst_recon_env"
-dynamic = ["version"]
-description = "GST Invoice Reconciliation & Compliance Agent - OpenEnv for Indian GST compliance"
+name = "gst-recon-env"
+version = "0.1.0"
+description = "GST Invoice Reconciliation OpenEnv Environment"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {file = "LICENSE"}
-authors = [
-    {name = "Manav Joshi", email = "manav@example.com"},
-]
-classifiers = [
-    "Development Status :: 5 - Production/Stable",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Topic :: Software Development :: Testing",
-    "Framework :: Pydantic",
-]
 
 dependencies = [
-    "pydantic>=2.5.0",
-    "fastapi>=0.0.24",
-    "uvicorn[standard]>=0.43.0",
-    "openenv-core>=0.1.0",
-    "pyyaml>=6.0",
+"fastapi>=0.104.0",
+"uvicorn>=0.23.0",
+"pydantic>=2.0.0",
+"openenv-core>=0.2.0",
+"openai>=1.0.0"
 ]
-
-[project.optional-dependencies]
-dev = [
-    "ruff>=0.5.0",
-    "black>=24.4.2",
-    "pytest>=8.0",
-    "httpx>=0.27.0",
-]
-
-[project.urls]
-Homepage = "https://github.com/ManavJoshi-2579/gst-recon-env"
-Repository = "https://github.com/ManavJoshi-2579/gst-recon-env"
-Documentation = "https://github.com/ManavJoshi-2579/gst-recon-env/blob/main/README.md"
 
 [project.scripts]
 server = "server.app:main"
-gst-recon-env = "server.app:main"
-gst-recon-dev = "server.dev:run_dev_server"
-
-[tool.hatch.version]
-path = "server/__init__.py"
-
-[tool.ruff]
-line-length = 100
-target-version = "py310"
-
-[tool.black]
-line-length = 100
-target-version = ['py310']
