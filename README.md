@@ -1,4 +1,11 @@
-﻿# GST-Recon-Env: GST Invoice Reconciliation RL Environment
+---
+title: GST Recon Env
+sdk: docker
+app_port: 8000
+pinned: false
+---
+
+# GST-Recon-Env: GST Invoice Reconciliation RL Environment
 
 An OpenEnv-compatible reinforcement learning environment for Indian GST invoice reconciliation, mismatch detection, and Input Tax Credit decision-making.
 
