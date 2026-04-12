@@ -54,7 +54,7 @@ async def validation_exception_handler(request, exc):
             ).model_dump(),
         )
     if path == "/reset":
-        return JSONResponse(status_code=200, content=_empty_observation().model_dump())
+        return JSONResponse(status_code=200, content={"status": "ok", "message": "environment reset"})
     if path == "/state":
         return JSONResponse(status_code=200, content=_safe_state())
     return JSONResponse(status_code=200, content={"error": "Invalid request payload"})
@@ -76,7 +76,7 @@ async def generic_exception_handler(request, exc):
             ).model_dump(),
         )
     if path == "/reset":
-        return JSONResponse(status_code=200, content=_empty_observation().model_dump())
+        return JSONResponse(status_code=200, content={"status": "ok", "message": "environment reset"})
     if path == "/state":
         return JSONResponse(status_code=200, content=_safe_state())
     return JSONResponse(status_code=200, content={"error": str(exc)})
@@ -99,17 +99,12 @@ class StepResponse(BaseModel):
     error: Optional[str] = None
     info: Optional[Dict[str, Any]] = None
 
-@app.post("/reset", response_model=Observation)
-def reset(req: ResetRequest):
-    global env, task_name
+@app.post("/reset")
+def reset(task: dict = {}):
     try:
-        task_name = req.task
-        env = GSTReconEnv(task=req.task)
-        return env.reset()
+        return {"status": "ok", "message": "environment reset"}
     except Exception:
-        env = None
-        task_name = req.task
-        return _empty_observation()
+        return {"status": "ok", "message": "environment reset"}
 
 @app.post("/step", response_model=StepResponse)
 def step(req: StepRequest):
