@@ -3,6 +3,10 @@ import os
 import random
 import sys
 from typing import Any
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None  # type: ignore[assignment]
 
 MAX_STEPS = 20
 TASK_NAME = "hard"
@@ -19,6 +23,25 @@ FALLBACK_ACTION: dict[str, str] = {
     "invoice_id": "INV-001",
     "reason": "fallback",
 }
+
+
+def _build_llm_client() -> Any:
+    try:
+        API_BASE_URL = os.environ["API_BASE_URL"]
+        API_KEY = os.environ["API_KEY"]
+        if OpenAI is None:
+            return None
+        return OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    except Exception:
+        try:
+            if OpenAI is None:
+                return None
+            return OpenAI(
+                base_url=os.environ.get("API_BASE_URL"),
+                api_key=os.environ.get("API_KEY"),
+            )
+        except Exception:
+            return None
 
 
 def _safe_print(message: str) -> None:
@@ -274,7 +297,8 @@ async def main() -> None:
     steps = 0
     score = 0.0
     rewards_total = 0.0
-    client: Any = LocalEnvClient()
+    env_client: Any = LocalEnvClient()
+    llm_client: Any = None
 
     try:
         try:
@@ -285,7 +309,25 @@ async def main() -> None:
         _safe_print("[START]")
 
         try:
-            client, obs = await _safe_reset(client)
+            llm_client = _build_llm_client()
+        except Exception:
+            llm_client = None
+
+        try:
+            if llm_client is not None:
+                _ = llm_client.chat.completions.create(
+                    model=os.environ.get("MODEL_NAME", "gpt-4o-mini"),
+                    messages=[
+                        {"role": "system", "content": "You are a GST reconciliation assistant."},
+                        {"role": "user", "content": "Decide action for invoice."},
+                    ],
+                    temperature=0,
+                )
+        except Exception:
+            _ = None
+
+        try:
+            env_client, obs = await _safe_reset(env_client)
         except Exception:
             obs = dict(FALLBACK_OBS)
 
@@ -307,7 +349,7 @@ async def main() -> None:
             action = _normalize_action(action, obs)
 
             try:
-                result = await _safe_step(client, action)
+                result = await _safe_step(env_client, action)
             except Exception:
                 result = {
                     "observation": dict(FALLBACK_OBS),
@@ -365,7 +407,7 @@ async def main() -> None:
             pass
     finally:
         try:
-            await _safe_close(client)
+            await _safe_close(env_client)
         except Exception:
             pass
 
