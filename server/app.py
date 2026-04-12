@@ -152,7 +152,7 @@ def get_tasks():
 
 def main():
     """Entry point for [project.scripts]"""
-    port = int(os.getenv("PORT", "8000"))
+    port = int(os.getenv("PORT", "7860"))
     uvicorn.run(app, host="0.0.0.0", port=port)
 
 def run_server():

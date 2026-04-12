@@ -11,6 +11,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . /app
 RUN pip install --no-cache-dir .
 
-EXPOSE 8000
+EXPOSE 7860
 
-CMD ["python", "-c", "import os, subprocess, sys; target = [sys.executable, '-m', 'server.app'] if os.getenv('PORT') else [sys.executable, 'inference.py']; raise SystemExit(subprocess.call(target))"]
+CMD ["sh", "-c", "if [ \"$SPACE_ID\" ]; then uvicorn server.app:app --host 0.0.0.0 --port 7860; else python inference.py; fi"]
