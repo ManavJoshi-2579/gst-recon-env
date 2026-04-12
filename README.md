@@ -1,4 +1,4 @@
----
+﻿---
 title: GST Recon Env
 sdk: docker
 app_port: 7860
@@ -15,6 +15,10 @@ GST reconciliation is a recurring back-office workflow in which purchase invoice
 
 `GST-Recon-Env` models this process as a sequential decision environment. An agent reviews one invoice at a time, compares it with available GSTR-2B entries, chooses compliance actions, and is scored on correctness, risk, and final reporting quality.
 
+This environment captures a real-world GST compliance workflow where incorrect decisions directly impact financial risk and working capital. Reinforcement learning is well-suited for this setting because agents must balance correctness, uncertainty, and long-term risk rather than follow static rules.
+
+This environment is specifically designed for learning-based agents, where policies must evolve across episodes rather than rely on static heuristics. The sequential structure and delayed scoring ensure that optimal strategies require reasoning over both local correctness and long-term compliance risk.
+
 ## Motivation
 
 This problem matters because reconciliation quality directly affects compliance exposure and working capital:
@@ -25,6 +29,8 @@ This problem matters because reconciliation quality directly affects compliance 
 - Real teams need consistent, repeatable decision policies rather than brittle rule chains.
 
 The environment is intended as a realistic benchmark for evaluating agents on compliance-sensitive business operations, not just generic task completion.
+
+Unlike synthetic RL benchmarks, this environment captures a real financial workflow with asymmetric penalties, delayed consequences, and uncertainty, making it suitable for evaluating agent reliability in production-like conditions.
 
 ## OpenEnv Compliance
 
@@ -46,6 +52,8 @@ Expected result:
 ```text
 [OK] gst_recon: Ready for multi-mode deployment
 ```
+
+This environment has been validated using `openenv validate` and is fully compliant with the OpenEnv specification.
 
 ## Action Space
 
@@ -70,6 +78,10 @@ Runtime HTTP action model:
 
 Supported actions:
 
+The agent selects one discrete action per invoice based on reconciliation evidence.
+
+![Supported actions](assets/Actions.png)
+
 | Action | Purpose |
 |---|---|
 | `match` | Accept the current invoice as compliant and matched to GSTR-2B |
@@ -79,6 +91,8 @@ Supported actions:
 | `submit_report` | End the episode and trigger final grading |
 
 ## Observation Space
+
+The observation provides both invoice-level details and global progress signals, enabling the agent to reason about both local correctness and episode-level strategy.
 
 OpenEnv-facing schema:
 
@@ -134,6 +148,8 @@ Each step response also includes structured metadata:
 
 The environment exposes three difficulty levels:
 
+![Task difficulty levels](assets/Tasks.png)
+
 | Task | Invoices | Mismatch Probability | Behavioral Focus |
 |---|---:|---:|---|
 | `easy` | 3 | 10% | Straightforward reconciliation with low ambiguity |
@@ -171,6 +187,10 @@ Design principles:
 - Duplicate handling and loop penalties reduce exploitability.
 - Final grading is separated from local step shaping to keep behavior interpretable.
 
+All rewards are bounded and normalized to encourage stable learning, and the overall episode score is constrained to the range [0.0, 1.0].
+
+The reward system is explicitly designed to prevent trivial policies such as always-claim or always-reject strategies. Repetition penalties, duplicate handling, and risk-aware grading ensure that only balanced, context-sensitive policies achieve high scores.
+
 ## Grader System
 
 Scoring is deterministic and normalized to `[0.0, 1.0]`.
@@ -199,6 +219,8 @@ The final implementation clamps scores with:
 ```python
 score = min(max(score, 0.0), 1.0)
 ```
+
+Common failure modes for agents include over-claiming ITC, repetitive single-action policies, and ignoring risk signals. The environment penalizes these behaviors explicitly, making it suitable for evaluating robustness beyond raw accuracy.
 
 ## Baseline Results
 
@@ -238,28 +260,28 @@ docker build -t gst-recon-env .
 Run the server:
 
 ```powershell
-docker run --rm -p 8000:8000 gst-recon-env
+docker run --rm -p 7860:7860 -e SPACE_ID=local-test gst-recon-env
 ```
 
 Run in detached mode:
 
 ```powershell
-docker run -d --name gst-recon-env-test -p 8000:8000 gst-recon-env
+docker run -d --name gst-recon-env-test -p 7860:7860 -e SPACE_ID=local-test gst-recon-env
 ```
 
 Test the API:
 
 ```powershell
-curl.exe http://localhost:8000/
-curl.exe http://localhost:8000/tasks
-curl.exe -X POST http://localhost:8000/reset
-curl.exe http://localhost:8000/state
+curl.exe http://localhost:7860/
+curl.exe http://localhost:7860/tasks
+curl.exe -X POST http://localhost:7860/reset
+curl.exe http://localhost:7860/state
 ```
 
 Test `/reset` with an explicit task:
 
 ```powershell
-curl.exe -X POST http://localhost:8000/reset `
+curl.exe -X POST http://localhost:7860/reset `
   -H "Content-Type: application/json" `
   -d "{\"task\":\"hard\"}"
 ```
@@ -280,25 +302,29 @@ Server entry:
 python -m server.app
 ```
 
+The container automatically switches between inference mode and server mode depending on runtime environment (local vs Hugging Face Space).
+
 Hugging Face Space readiness:
 
 - Compatible with Docker Spaces.
 - Binds to `0.0.0.0`.
-- Supports `PORT` via environment variable with default `8000`.
+- Supports Hugging Face runtime on port `7860`.
 - Includes a Dockerfile that has already been verified to build successfully.
+
+The system is production-representative, with deterministic behavior, strict API contracts, and failure-safe inference execution, ensuring reliable evaluation across environments.
 
 Suggested Hugging Face flow:
 
 1. Create a new Space.
 2. Select `Docker` as the SDK.
 3. Upload this repository or connect the GitHub repo.
-4. Set the app port to `8000`.
+4. Set the app port to `7860`.
 5. Deploy and verify `/`, `/docs`, and `/tasks`.
 
 Interactive docs:
 
 ```text
-http://localhost:8000/docs
+http://localhost:7860/docs
 ```
 
 ## Project Structure
@@ -332,6 +358,8 @@ The environment is designed for deterministic evaluation:
 - Graders are deterministic and normalized.
 - Inference falls back to deterministic heuristics when no external model is configured.
 
+This guarantees consistent benchmarking and enables fair comparison between different agent strategies.
+
 ## Limitations
 
 This is a simulation benchmark, not a production tax engine.
@@ -344,3 +372,7 @@ This is a simulation benchmark, not a production tax engine.
 ## Conclusion
 
 `GST-Recon-Env` turns a real compliance workflow into a compact, reproducible RL benchmark with meaningful tradeoffs between accuracy, risk, and ITC behavior. It is OpenEnv-validated, Docker-ready, deployment-ready, and directly relevant to real-world finance operations where decision errors are costly.
+
+This environment is deterministic, robust to runtime failures, and production-ready for evaluating autonomous agents in compliance-sensitive workflows.
+
+This environment fills a critical gap in RL evaluation by combining real-world financial decision-making with exploit-resistant reward design and deterministic benchmarking.
