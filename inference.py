@@ -1,91 +1,148 @@
 import asyncio
 import os
 import random
-import time
+import sys
 from typing import Any
 
 MAX_STEPS = 20
 TASK_NAME = "hard"
-ENV_NAME = "gst_recon_env"
+
+FALLBACK_OBS: dict[str, Any] = {
+    "current_invoice": {"id": "INV-001"},
+    "mismatch_flags": [],
+    "risk_score": 0.0,
+    "progress": 0.0,
+}
+
+FALLBACK_ACTION: dict[str, str] = {
+    "type": "reject",
+    "invoice_id": "INV-001",
+    "reason": "fallback",
+}
 
 
-def _bool_str(value: Any) -> str:
-    return "true" if bool(value) else "false"
-
-
-def _clamp_score(score: Any) -> float:
+def _safe_print(message: str) -> None:
     try:
-        return min(max(float(score or 0.0), 0.0), 1.0)
+        print(message, flush=True)
+    except Exception:
+        pass
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _clamp_score(value: Any) -> float:
+    try:
+        score = _safe_float(value, 0.0)
+        if score < 0.0:
+            return 0.0
+        if score > 1.0:
+            return 1.0
+        return score
     except Exception:
         return 0.0
 
 
-def _fallback_obs() -> dict[str, Any]:
-    return {
-        "current_invoice": {"id": "INV-001", "invoice_id": "INV-001", "gstin": "UNKNOWN", "is_einvoice": False},
-        "available_gstr2b": [],
-        "matched": [],
-        "mismatches": [],
-        "current_itc": 0.0,
-        "total_itc_possible": 0.0,
-        "progress": 0.0,
-        "warnings": [],
-        "step_count": 0,
-    }
+def _safe_obs(obs: Any) -> dict[str, Any]:
+    if not isinstance(obs, dict):
+        return dict(FALLBACK_OBS)
+
+    merged = dict(FALLBACK_OBS)
+    try:
+        merged.update(obs)
+    except Exception:
+        return dict(FALLBACK_OBS)
+
+    current_invoice = merged.get("current_invoice")
+    if not isinstance(current_invoice, dict):
+        merged["current_invoice"] = {"id": "INV-001"}
+    else:
+        if not current_invoice.get("id"):
+            current_invoice["id"] = "INV-001"
+        merged["current_invoice"] = current_invoice
+
+    if not isinstance(merged.get("mismatch_flags"), list):
+        merged["mismatch_flags"] = []
+
+    merged["risk_score"] = _safe_float(merged.get("risk_score"), 0.0)
+    merged["progress"] = _safe_float(merged.get("progress"), 0.0)
+    return merged
 
 
 def _safe_invoice_id(obs: Any) -> str:
+    safe = _safe_obs(obs)
     try:
-        invoice = obs.get("current_invoice") if isinstance(obs, dict) else None
-        invoice_id = invoice.get("id") if isinstance(invoice, dict) else None
-        return str(invoice_id or "INV-001")
+        current_invoice = safe.get("current_invoice")
+        if isinstance(current_invoice, dict):
+            return str(current_invoice.get("id") or "INV-001")
     except Exception:
-        return "INV-001"
+        pass
+    return "INV-001"
 
 
-def _fallback_action(obs: Any | None = None) -> dict[str, str]:
-    return {
-        "type": "reject",
-        "invoice_id": _safe_invoice_id(obs or _fallback_obs()),
-        "reason": "fallback",
-    }
+def _fallback_action(obs: Any = None) -> dict[str, str]:
+    action = dict(FALLBACK_ACTION)
+    try:
+        action["invoice_id"] = _safe_invoice_id(obs)
+    except Exception:
+        action["invoice_id"] = "INV-001"
+    return action
 
 
-def _normalize_action(action: Any, obs: Any | None = None) -> dict[str, str]:
+def _normalize_action(action: Any, obs: Any) -> dict[str, str]:
     if not isinstance(action, dict):
         return _fallback_action(obs)
-    if not action.get("invoice_id"):
-        return _fallback_action(obs)
-    action_type = str(action.get("type") or "reject")
+
+    try:
+        action_type = str(action.get("type") or "reject")
+    except Exception:
+        action_type = "reject"
+
     if action_type not in {"match", "reject", "claim_itc", "query_vendor", "submit_report"}:
         action_type = "reject"
-    return {
-        "type": action_type,
-        "invoice_id": str(action.get("invoice_id") or _safe_invoice_id(obs or _fallback_obs())),
-        "reason": str(action.get("reason") or "fallback"),
-    }
+
+    try:
+        invoice_id = str(action.get("invoice_id") or _safe_invoice_id(obs))
+    except Exception:
+        invoice_id = "INV-001"
+
+    try:
+        reason = str(action.get("reason") or "fallback")
+    except Exception:
+        reason = "fallback"
+
+    return {"type": action_type, "invoice_id": invoice_id, "reason": reason}
 
 
 def _heuristic_action(obs: Any) -> dict[str, str]:
+    safe = _safe_obs(obs)
     try:
-        if not isinstance(obs, dict):
-            return _fallback_action(obs)
-        invoice = obs.get("current_invoice")
+        invoice = safe.get("current_invoice")
         if not isinstance(invoice, dict):
-            return {"type": "submit_report", "invoice_id": "INV-001", "reason": "complete"}
+            return _fallback_action(safe)
+
         invoice_id = str(invoice.get("id") or "INV-001")
-        entries = obs.get("available_gstr2b")
-        has_match = any(
-            isinstance(entry, dict) and entry.get("invoice_id") == invoice_id
-            for entry in (entries if isinstance(entries, list) else [])
-        )
-        if invoice.get("gstin", "").startswith("INVALID") or not invoice.get("is_einvoice", True):
-            return {"type": "reject", "invoice_id": invoice_id, "reason": "invalid GSTIN or e-invoice"}
-        if has_match:
-            return {"type": "match", "invoice_id": invoice_id, "reason": "matched in GSTR-2B"}
-        return {"type": "reject", "invoice_id": invoice_id, "reason": "not found in GSTR-2B"}
+        mismatch_flags = safe.get("mismatch_flags")
+        if not isinstance(mismatch_flags, list):
+            mismatch_flags = []
+
+        risk_score = _safe_float(safe.get("risk_score"), 0.0)
+        progress = _safe_float(safe.get("progress"), 0.0)
+
+        if risk_score >= 0.75:
+            return {"type": "reject", "invoice_id": invoice_id, "reason": "high_risk"}
+        if mismatch_flags:
+            return {"type": "query_vendor", "invoice_id": invoice_id, "reason": "mismatch"}
+        if progress >= 1.0:
+            return {"type": "submit_report", "invoice_id": invoice_id, "reason": "complete"}
+
+        return {"type": "match", "invoice_id": invoice_id, "reason": "heuristic_match"}
     except Exception:
-        return _fallback_action(obs)
+        return _fallback_action(safe)
 
 
 class LocalEnvClient:
@@ -97,39 +154,50 @@ class LocalEnvClient:
             from server.gst_recon_env_environment import GSTReconEnv
 
             self.env = GSTReconEnv(task=task)
-            return self.env.reset().model_dump()
+            raw_obs = self.env.reset()
+            if hasattr(raw_obs, "model_dump"):
+                return _safe_obs(raw_obs.model_dump())
+            return _safe_obs(raw_obs)
         except Exception:
             self.env = None
-            return _fallback_obs()
+            return dict(FALLBACK_OBS)
 
     async def step(self, action: dict[str, Any]) -> dict[str, Any]:
+        safe_action = _normalize_action(action, FALLBACK_OBS)
+
         try:
             if self.env is None:
                 return {
-                    "observation": _fallback_obs(),
-                    "reward": 0.1,
+                    "observation": dict(FALLBACK_OBS),
+                    "reward": 0.0,
                     "done": True,
                     "score": 0.0,
-                    "error": None,
+                    "error": "env_unavailable",
                     "info": {"score": 0.0, "risk": 0.0, "processed": 0},
                 }
 
             from server.models import Action
 
-            parsed_action = Action.model_validate(action)
+            parsed_action = Action.model_validate(safe_action)
             obs, reward, done, info = self.env.step(parsed_action)
-            score = _clamp_score(info.get("score") if isinstance(info, dict) and done else 0.0)
+
+            if hasattr(obs, "model_dump"):
+                observation = _safe_obs(obs.model_dump())
+            else:
+                observation = _safe_obs(obs)
+
+            safe_info = info if isinstance(info, dict) else {}
             return {
-                "observation": obs.model_dump(),
-                "reward": float(reward or 0.0),
+                "observation": observation,
+                "reward": _safe_float(reward, 0.0),
                 "done": bool(done),
-                "score": score if done else None,
-                "error": getattr(self.env, "last_error", None),
-                "info": info if isinstance(info, dict) else {},
+                "score": _clamp_score(safe_info.get("score")),
+                "error": None,
+                "info": safe_info,
             }
         except Exception as exc:
             return {
-                "observation": _fallback_obs(),
+                "observation": dict(FALLBACK_OBS),
                 "reward": 0.0,
                 "done": True,
                 "score": 0.0,
@@ -138,114 +206,189 @@ class LocalEnvClient:
             }
 
     async def aclose(self) -> None:
-        return None
-
-
-async def _make_client() -> Any:
-    return LocalEnvClient()
+        try:
+            return None
+        except Exception:
+            return None
 
 
 async def _safe_close(client: Any) -> None:
     try:
         if hasattr(client, "aclose"):
             await client.aclose()
-        elif hasattr(client, "_client") and hasattr(client._client, "aclose"):
-            await client._client.aclose()
     except Exception:
-        return None
+        pass
 
 
 async def _safe_reset(client: Any) -> tuple[Any, dict[str, Any]]:
     try:
         obs = await client.reset(task=TASK_NAME)
-        return client, obs if isinstance(obs, dict) else _fallback_obs()
+        return client, _safe_obs(obs)
     except Exception:
-        await _safe_close(client)
+        try:
+            await _safe_close(client)
+        except Exception:
+            pass
         fallback_client = LocalEnvClient()
-        return fallback_client, await fallback_client.reset(task=TASK_NAME)
+        try:
+            fallback_obs = await fallback_client.reset(task=TASK_NAME)
+            return fallback_client, _safe_obs(fallback_obs)
+        except Exception:
+            return fallback_client, dict(FALLBACK_OBS)
 
 
 async def _safe_step(client: Any, action: dict[str, str]) -> dict[str, Any]:
     try:
         result = await client.step(action)
-        return result if isinstance(result, dict) else {}
+        if not isinstance(result, dict):
+            return {
+                "observation": dict(FALLBACK_OBS),
+                "reward": 0.0,
+                "done": True,
+                "score": 0.0,
+                "error": "invalid_step_result",
+                "info": {},
+            }
+        observation = _safe_obs(result.get("observation"))
+        return {
+            "observation": observation,
+            "reward": _safe_float(result.get("reward"), 0.0),
+            "done": bool(result.get("done")),
+            "score": _clamp_score(result.get("score")),
+            "error": result.get("error"),
+            "info": result.get("info") if isinstance(result.get("info"), dict) else {},
+        }
     except Exception as exc:
         return {
-            "observation": _fallback_obs(),
+            "observation": dict(FALLBACK_OBS),
             "reward": 0.0,
             "done": True,
             "score": 0.0,
             "error": str(exc),
+            "info": {},
         }
 
 
-async def main():
-    random.seed(int(os.getenv("SEED", "42")))
-    print("[START]", flush=True)
-
-    client = await _make_client()
-    step_n = 0
-    rewards = []
+async def main() -> None:
     success = False
-    result = {"score": 0.0, "done": False, "error": None}
-    seen = set()
+    steps = 0
+    score = 0.0
+    rewards_total = 0.0
+    client: Any = LocalEnvClient()
 
     try:
         try:
+            random.seed(int(os.getenv("SEED", "42")))
+        except Exception:
+            random.seed(42)
+
+        _safe_print("[START]")
+
+        try:
             client, obs = await _safe_reset(client)
         except Exception:
-            obs = {"invoice_id": "INV-001"}
+            obs = dict(FALLBACK_OBS)
 
-        while step_n < MAX_STEPS:
-            step_n += 1
-            action = _normalize_action(_heuristic_action(obs), obs)
-            if not action or "invoice_id" not in action:
-                action = {"type": "reject", "invoice_id": "INV-001", "reason": "fallback"}
-            invoice_id = action.get("invoice_id") or "INV-001"
-            if invoice_id in seen:
-                action = _fallback_action(obs)
-                action["invoice_id"] = invoice_id
-            seen.add(invoice_id)
+        obs = _safe_obs(obs)
+
+        while steps < MAX_STEPS:
+            steps += 1
+            try:
+                if not isinstance(obs, dict):
+                    obs = dict(FALLBACK_OBS)
+            except Exception:
+                obs = dict(FALLBACK_OBS)
+
+            try:
+                action = _heuristic_action(obs)
+            except Exception:
+                action = dict(FALLBACK_ACTION)
+
+            action = _normalize_action(action, obs)
 
             try:
                 result = await _safe_step(client, action)
-                obs = result.get("observation") if isinstance(result.get("observation"), dict) else _fallback_obs()
-                reward = _clamp_score(result.get("reward"))
-            except Exception as exc:
-                result = {"observation": _fallback_obs(), "reward": 0.0, "done": True, "score": 0.0, "error": str(exc)}
-                obs = result["observation"]
+            except Exception:
+                result = {
+                    "observation": dict(FALLBACK_OBS),
+                    "reward": 0.0,
+                    "done": True,
+                    "score": 0.0,
+                    "error": "safe_step_failed",
+                    "info": {},
+                }
+
+            try:
+                obs = _safe_obs(result.get("observation"))
+            except Exception:
+                obs = dict(FALLBACK_OBS)
+
+            try:
+                reward = _safe_float(result.get("reward"), 0.0)
+            except Exception:
                 reward = 0.0
-            rewards.append(reward)
 
-            print(
-                f"[STEP] step={step_n} action={action.get('type', 'reject')}(id={invoice_id}) "
-                f"reward={reward:.2f} done={_bool_str(result.get('done'))} "
-                f"error={result.get('error') or 'null'}",
-                flush=True,
-            )
+            rewards_total += reward
+            score = _clamp_score(result.get("score"))
 
-            if bool(result.get("done")):
-                result["score"] = _clamp_score(result.get("score"))
-                success = result["score"] >= 0.7
+            try:
+                done = bool(result.get("done"))
+            except Exception:
+                done = True
+
+            try:
+                error_value = result.get("error")
+            except Exception:
+                error_value = "unknown"
+
+            try:
+                _safe_print(
+                    f"[STEP] step={steps} action={action.get('type', 'reject')} "
+                    f"invoice_id={action.get('invoice_id', 'INV-001')} reward={reward:.4f} "
+                    f"done={'true' if done else 'false'} error={error_value if error_value else 'null'}"
+                )
+            except Exception:
+                pass
+
+            if done:
+                success = score >= 0.7
                 break
+
+        try:
+            _safe_print(f"[END] success={'true' if success else 'false'} steps={steps} score={score:.1f} rewards={rewards_total:.1f}")
+        except Exception:
+            _safe_print("[END] success=false steps=0 score=0.0 rewards=0.0")
     except Exception as exc:
-        result = {"score": 0.0, "error": str(exc)}
-        success = False
+        try:
+            _safe_print(f"[END] success=false steps=0 score=0.0 rewards=0.0 error={str(exc)}")
+        except Exception:
+            pass
     finally:
-        await _safe_close(client)
+        try:
+            await _safe_close(client)
+        except Exception:
+            pass
 
-    rewards_str = "[" + ", ".join(f"{reward:.2f}" for reward in rewards) + "]"
-    print(
-        f"[END] success=true steps={step_n} "
-        f"score={_clamp_score(result.get('score')):.1f} rewards={rewards_str}",
-        flush=True,
-    )
-    time.sleep(5)
 
-if __name__ == "__main__":
+def safe_main() -> None:
     try:
         asyncio.run(main())
     except Exception as e:
-        print(f"[END] success=false steps=0 score=0.0 rewards=0.0 error= {str(e)}", flush=True)
+        try:
+            print(f"[END] success=false steps=0 score=0.0 rewards=0.0 error={str(e)}", flush=True)
+        except Exception:
+            pass
+    except BaseException as e:
+        try:
+            print(f"[END] success=false steps=0 score=0.0 rewards=0.0 error={str(e)}", flush=True)
+        except Exception:
+            pass
     finally:
-        time.sleep(5)
+        try:
+            sys.exit(0)
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    safe_main()
