@@ -22,7 +22,7 @@ def _clamp_score(score: Any) -> float:
 
 def _fallback_obs() -> dict[str, Any]:
     return {
-        "current_invoice": {"id": "INV-001", "gstin": "UNKNOWN", "is_einvoice": False},
+        "current_invoice": {"id": "INV-001", "invoice_id": "INV-001", "gstin": "UNKNOWN", "is_einvoice": False},
         "available_gstr2b": [],
         "matched": [],
         "mismatches": [],
