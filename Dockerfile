@@ -13,4 +13,4 @@ RUN pip install --no-cache-dir .
 
 EXPOSE 7860
 
-CMD ["sh", "-c", "if [ \"$SPACE_ID\" ]; then uvicorn server.app:app --host 0.0.0.0 --port 7860; else python inference.py; fi"]
+CMD ["python", "inference.py"]
