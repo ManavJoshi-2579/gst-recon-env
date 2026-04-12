@@ -1,15 +1,16 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PIP_NO_CACHE_DIR=1
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . /app
-RUN pip install .
+RUN pip install --no-cache-dir .
 
-CMD ["python", "inference.py"]
+EXPOSE 8000
+
+CMD ["python", "-c", "import os, subprocess, sys; target = [sys.executable, '-m', 'server.app'] if os.getenv('PORT') else [sys.executable, 'inference.py']; raise SystemExit(subprocess.call(target))"]

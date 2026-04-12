@@ -1,255 +1,339 @@
----
-title: Gst Recon Env Environment Server
-emoji: 🏏
-colorFrom: gray
-colorTo: indigo
-sdk: docker
-pinned: false
-app_port: 8000
-base_path: /web
-tags:
-  - openenv
----
+﻿# GST-Recon-Env: GST Invoice Reconciliation RL Environment
 
-# Gst Recon Env Environment
+An OpenEnv-compatible reinforcement learning environment for Indian GST invoice reconciliation, mismatch detection, and Input Tax Credit decision-making.
 
-A simple test environment that echoes back messages. Perfect for testing the env APIs as well as demonstrating environment usage patterns.
+## Overview
 
-## Quick Start
+GST reconciliation is a recurring back-office workflow in which purchase invoices must be checked against filed GSTR-2B data before claiming Input Tax Credit (ITC). In practice, teams must detect missing entries, tax mismatches, invalid GSTINs, e-invoice failures, and suspicious vendor behavior while still maximizing valid claims.
 
-The simplest way to use the Gst Recon Env environment is through the `GstReconEnv` class:
+`GST-Recon-Env` models this process as a sequential decision environment. An agent reviews one invoice at a time, compares it with available GSTR-2B entries, chooses compliance actions, and is scored on correctness, risk, and final reporting quality.
+
+## Motivation
+
+This problem matters because reconciliation quality directly affects compliance exposure and working capital:
+
+- Incorrect ITC claims can create audit risk and downstream penalties.
+- Missing or mismatched supplier filings delay recoverable tax credits.
+- Fraudulent or non-compliant invoices should be rejected even when short-term incentives favor claiming.
+- Real teams need consistent, repeatable decision policies rather than brittle rule chains.
+
+The environment is intended as a realistic benchmark for evaluating agents on compliance-sensitive business operations, not just generic task completion.
+
+## OpenEnv Compliance
+
+The project is structured to match OpenEnv expectations:
+
+- `reset()` initializes a deterministic episode and returns a typed observation.
+- `step()` consumes a typed action and returns observation, reward, done, and info.
+- `state()` returns a JSON-serializable dictionary for inspection and debugging.
+- Pydantic models define actions, invoices, GSTR-2B entries, and observations.
+- `openenv.yaml` declares entrypoint, tasks, reward range, action space, and observation space.
+- The project passes validation with:
+
+```powershell
+.\.venv\Scripts\openenv.exe validate
+```
+
+Expected result:
+
+```text
+[OK] gst_recon: Ready for multi-mode deployment
+```
+
+## Action Space
+
+OpenEnv-facing schema:
+
+```json
+{
+  "action_type": "string",
+  "invoice_id": "string"
+}
+```
+
+Runtime HTTP action model:
+
+```json
+{
+  "type": "match | reject | claim_itc | query_vendor | submit_report",
+  "invoice_id": "INV-001",
+  "reason": "optional free-text explanation"
+}
+```
+
+Supported actions:
+
+| Action | Purpose |
+|---|---|
+| `match` | Accept the current invoice as compliant and matched to GSTR-2B |
+| `reject` | Reject the invoice for mismatch, fraud, missing filing, or invalidity |
+| `claim_itc` | Claim tax credit for a compliant invoice |
+| `query_vendor` | Ask for clarification when evidence is incomplete |
+| `submit_report` | End the episode and trigger final grading |
+
+## Observation Space
+
+OpenEnv-facing schema:
+
+```json
+{
+  "current_invoice": "object",
+  "mismatch_flags": "list",
+  "risk_score": "float",
+  "progress": "float"
+}
+```
+
+Actual HTTP observation returned by the server:
+
+```json
+{
+  "current_invoice": {
+    "id": "INV-001",
+    "gstin": "29ABCDE1234F1Z5",
+    "date": "2025-01-01",
+    "value": 12000.0,
+    "hsn": "9983",
+    "igst": 0.0,
+    "cgst": 1080.0,
+    "sgst": 1080.0,
+    "is_einvoice": true,
+    "is_fraud": false
+  },
+  "available_gstr2b": [],
+  "matched": [],
+  "mismatches": [],
+  "current_itc": 0.0,
+  "total_itc_possible": 0.0,
+  "progress": 0.0,
+  "warnings": [],
+  "step_count": 0
+}
+```
+
+Each step response also includes structured metadata:
+
+```json
+{
+  "info": {
+    "score": 0.0,
+    "risk": 0.0,
+    "processed": 0
+  }
+}
+```
+
+## Tasks (Difficulty Levels)
+
+The environment exposes three difficulty levels:
+
+| Task | Invoices | Mismatch Probability | Behavioral Focus |
+|---|---:|---:|---|
+| `easy` | 3 | 10% | Straightforward reconciliation with low ambiguity |
+| `medium` | 5 | 30% | More missing and mismatched entries; careful ITC decisions matter |
+| `hard` | 8 | 50% | Fraud signals, e-invoice failures, and risk-aware claim behavior dominate |
+
+Behavior changes across difficulties:
+
+- `easy` emphasizes basic matching accuracy.
+- `medium` increases error surface and penalizes over-claiming more meaningfully.
+- `hard` increases fraud and mismatch exposure, making risk management central to final score.
+
+## Reward Design
+
+The reward function is shaped to encourage correct local actions while preventing trivial exploitation.
+
+| Event | Reward |
+|---|---:|
+| `match_invoice` correct | `+0.3` |
+| `reject_invoice` correct | `+0.2` |
+| `claim_itc` correct | `+0.5` |
+| Wrong `match` / `reject` | `-0.3` |
+| Wrong `claim_itc` | `-0.7` |
+| `query_vendor` on uncertain invoice | small positive shaping |
+| Duplicate invoice/action | `-0.3` |
+| Repeated same decision streak | `-0.1` |
+| Loop beyond invoice set | `-0.2` |
+
+Design principles:
+
+- Rewards are non-zero for meaningful decisions.
+- Partial progress is visible through stepwise shaping instead of only terminal grading.
+- Wrong ITC claims increase `risk_score`.
+- Repetitive single-action policies are penalized.
+- Duplicate handling and loop penalties reduce exploitability.
+- Final grading is separated from local step shaping to keep behavior interpretable.
+
+## Grader System
+
+Scoring is deterministic and normalized to `[0.0, 1.0]`.
 
 ```python
-from gst_recon_env import GstReconAction, GstReconEnv
+def grade_easy(state):
+    return state.correct_matches / len(state.invoices)
 
-try:
-    # Create environment from Docker image
-    gst_recon_envenv = GstReconEnv.from_docker_image("gst_recon_env-env:latest")
+def grade_medium(state):
+    penalty = state.wrong_itc_claims * 0.2
+    return max(0.0, (state.correct_matches / len(state.invoices)) - penalty)
 
-    # Reset
-    result = gst_recon_envenv.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-
-    # Send multiple messages
-    messages = ["Hello, World!", "Testing echo", "Final message"]
-
-    for msg in messages:
-        result = gst_recon_envenv.step(GstReconAction(message=msg))
-        print(f"Sent: '{msg}'")
-        print(f"  → Echoed: '{result.observation.echoed_message}'")
-        print(f"  → Length: {result.observation.message_length}")
-        print(f"  → Reward: {result.reward}")
-
-finally:
-    # Always clean up
-    gst_recon_envenv.close()
+def grade_hard(state):
+    risk_penalty = state.risk_score
+    return max(0.0, (state.correct_matches / len(state.invoices)) * (1 - risk_penalty))
 ```
 
-That's it! The `GstReconEnv.from_docker_image()` method handles:
-- Starting the Docker container
-- Waiting for the server to be ready
-- Connecting to the environment
-- Container cleanup when you call `close()`
+Interpretation:
 
-## Building the Docker Image
+- `easy`: pure accuracy.
+- `medium`: accuracy minus wrong-claim penalties.
+- `hard`: accuracy discounted by accumulated risk.
 
-Before using the environment, you need to build the Docker image:
-
-```bash
-# From project root
-docker build -t gst_recon_env-env:latest -f server/Dockerfile .
-```
-
-## Deploying to Hugging Face Spaces
-
-You can easily deploy your OpenEnv environment to Hugging Face Spaces using the `openenv push` command:
-
-```bash
-# From the environment directory (where openenv.yaml is located)
-openenv push
-
-# Or specify options
-openenv push --namespace my-org --private
-```
-
-The `openenv push` command will:
-1. Validate that the directory is an OpenEnv environment (checks for `openenv.yaml`)
-2. Prepare a custom build for Hugging Face Docker space (enables web interface)
-3. Upload to Hugging Face (ensuring you're logged in)
-
-### Prerequisites
-
-- Authenticate with Hugging Face: The command will prompt for login if not already authenticated
-
-### Options
-
-- `--directory`, `-d`: Directory containing the OpenEnv environment (defaults to current directory)
-- `--repo-id`, `-r`: Repository ID in format 'username/repo-name' (defaults to 'username/env-name' from openenv.yaml)
-- `--base-image`, `-b`: Base Docker image to use (overrides Dockerfile FROM)
-- `--private`: Deploy the space as private (default: public)
-
-### Examples
-
-```bash
-# Push to your personal namespace (defaults to username/env-name from openenv.yaml)
-openenv push
-
-# Push to a specific repository
-openenv push --repo-id my-org/my-env
-
-# Push with a custom base image
-openenv push --base-image ghcr.io/meta-pytorch/openenv-base:latest
-
-# Push as a private space
-openenv push --private
-
-# Combine options
-openenv push --repo-id my-org/my-env --base-image custom-base:latest --private
-```
-
-After deployment, your space will be available at:
-`https://huggingface.co/spaces/<repo-id>`
-
-The deployed space includes:
-- **Web Interface** at `/web` - Interactive UI for exploring the environment
-- **API Documentation** at `/docs` - Full OpenAPI/Swagger interface
-- **Health Check** at `/health` - Container health monitoring
-- **WebSocket** at `/ws` - Persistent session endpoint for low-latency interactions
-
-## Environment Details
-
-### Action
-**GstReconAction**: Contains a single field
-- `message` (str) - The message to echo back
-
-### Observation
-**GstReconObservation**: Contains the echo response and metadata
-- `echoed_message` (str) - The message echoed back
-- `message_length` (int) - Length of the message
-- `reward` (float) - Reward based on message length (length × 0.1)
-- `done` (bool) - Always False for echo environment
-- `metadata` (dict) - Additional info like step count
-
-### Reward
-The reward is calculated as: `message_length × 0.1`
-- "Hi" → reward: 0.2
-- "Hello, World!" → reward: 1.3
-- Empty message → reward: 0.0
-
-## Advanced Usage
-
-### Connecting to an Existing Server
-
-If you already have a Gst Recon Env environment server running, you can connect directly:
+The final implementation clamps scores with:
 
 ```python
-from gst_recon_env import GstReconEnv
-
-# Connect to existing server
-gst_recon_envenv = GstReconEnv(base_url="<ENV_HTTP_URL_HERE>")
-
-# Use as normal
-result = gst_recon_envenv.reset()
-result = gst_recon_envenv.step(GstReconAction(message="Hello!"))
+score = min(max(score, 0.0), 1.0)
 ```
 
-Note: When connecting to an existing server, `gst_recon_envenv.close()` will NOT stop the server.
+## Baseline Results
 
-### Using the Context Manager
+Recent deterministic local inference run:
 
-The client supports context manager usage for automatic connection management:
-
-```python
-from gst_recon_env import GstReconAction, GstReconEnv
-
-# Connect with context manager (auto-connects and closes)
-with GstReconEnv(base_url="http://localhost:8000") as env:
-    result = env.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-    # Multiple steps with low latency
-    for msg in ["Hello", "World", "!"]:
-        result = env.step(GstReconAction(message=msg))
-        print(f"Echoed: {result.observation.echoed_message}")
+```text
+[START] task=hard env=gst_recon_env model=gpt-4o-mini
+[STEP] ...
+[END] success=True steps=8 score=1.0 rewards=0.20,0.20,0.30,0.20,0.20,0.10,0.30,0.20
 ```
 
-The client uses WebSocket connections for:
-- **Lower latency**: No HTTP connection overhead per request
-- **Persistent session**: Server maintains your environment state
-- **Efficient for episodes**: Better for many sequential steps
+Typical heuristic or simple-policy performance lands around `~0.8` to `~0.9`, depending on task mix and action diversity. Reject-only behavior is intentionally not competitive because repetition and risk-aware correctness both matter.
 
-### Concurrent WebSocket Sessions
+## Inference Script
 
-The server supports multiple concurrent WebSocket connections. To enable this,
-modify `server/app.py` to use factory mode:
+Run local inference with:
 
-```python
-# In server/app.py - use factory mode for concurrent sessions
-app = create_app(
-    GstReconEnvironment,  # Pass class, not instance
-    GstReconAction,
-    GstReconObservation,
-    max_concurrent_envs=4,  # Allow 4 concurrent sessions
-)
+```powershell
+.\.venv\Scripts\python.exe inference.py
 ```
 
-Then multiple clients can connect simultaneously:
+Behavior:
 
-```python
-from gst_recon_env import GstReconAction, GstReconEnv
-from concurrent.futures import ThreadPoolExecutor
+- Tries the HTTP server first.
+- Falls back to an in-process local environment if the server is unavailable.
+- Uses deterministic heuristics if no OpenAI API key is present.
+- Emits structured logs using `[START]`, `[STEP]`, and `[END]`.
 
-def run_episode(client_id: int):
-    with GstReconEnv(base_url="http://localhost:8000") as env:
-        result = env.reset()
-        for i in range(10):
-            result = env.step(GstReconAction(message=f"Client {client_id}, step {i}"))
-        return client_id, result.observation.message_length
+## Docker Instructions
 
-# Run 4 episodes concurrently
-with ThreadPoolExecutor(max_workers=4) as executor:
-    results = list(executor.map(run_episode, range(4)))
+Build the image:
+
+```powershell
+docker build -t gst-recon-env .
 ```
 
-## Development & Testing
+Run the server:
 
-### Direct Environment Testing
-
-Test the environment logic directly without starting the HTTP server:
-
-```bash
-# From the server directory
-python3 server/gst_recon_env_environment.py
+```powershell
+docker run --rm -p 8000:8000 gst-recon-env
 ```
 
-This verifies that:
-- Environment resets correctly
-- Step executes actions properly
-- State tracking works
-- Rewards are calculated correctly
+Run in detached mode:
 
-### Running Locally
+```powershell
+docker run -d --name gst-recon-env-test -p 8000:8000 gst-recon-env
+```
 
-Run the server locally for development:
+Test the API:
 
-```bash
-uvicorn server.app:app --reload
+```powershell
+curl.exe http://localhost:8000/
+curl.exe http://localhost:8000/tasks
+curl.exe -X POST http://localhost:8000/reset
+curl.exe http://localhost:8000/state
+```
+
+Test `/reset` with an explicit task:
+
+```powershell
+curl.exe -X POST http://localhost:8000/reset `
+  -H "Content-Type: application/json" `
+  -d "{\"task\":\"hard\"}"
+```
+
+Expected root response:
+
+```json
+{"status":"ok"}
+```
+
+## Deployment
+
+The project ships a FastAPI server in `server/app.py` and is ready for Docker-based deployment.
+
+Server entry:
+
+```powershell
+python -m server.app
+```
+
+Hugging Face Space readiness:
+
+- Compatible with Docker Spaces.
+- Binds to `0.0.0.0`.
+- Supports `PORT` via environment variable with default `8000`.
+- Includes a Dockerfile that has already been verified to build successfully.
+
+Suggested Hugging Face flow:
+
+1. Create a new Space.
+2. Select `Docker` as the SDK.
+3. Upload this repository or connect the GitHub repo.
+4. Set the app port to `8000`.
+5. Deploy and verify `/`, `/docs`, and `/tasks`.
+
+Interactive docs:
+
+```text
+http://localhost:8000/docs
 ```
 
 ## Project Structure
 
-```
+```text
 gst_recon_env/
-├── .dockerignore         # Docker build exclusions
-├── __init__.py            # Module exports
-├── README.md              # This file
-├── openenv.yaml           # OpenEnv manifest
-├── pyproject.toml         # Project metadata and dependencies
-├── uv.lock                # Locked dependencies (generated)
-├── client.py              # GstReconEnv client
-├── models.py              # Action and Observation models
-└── server/
-    ├── __init__.py        # Server module exports
-    ├── gst_recon_env_environment.py  # Core environment logic
-    ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
-    └── Dockerfile         # Container image definition
+|- assets/
+|- server/
+|  |- app.py
+|  |- dev.py
+|  |- gst_recon_env_environment.py
+|  |- models.py
+|  `- __init__.py
+|- client.py
+|- Dockerfile
+|- HF_SPACE_README.md
+|- inference.py
+|- openenv.yaml
+|- pyproject.toml
+|- README.md
+`- requirements.txt
 ```
+
+## Reproducibility
+
+The environment is designed for deterministic evaluation:
+
+- `random.seed(42)` is applied during reset.
+- `np.random.seed(42)` is applied when NumPy is available.
+- Episode generation is deterministic for a given task.
+- Graders are deterministic and normalized.
+- Inference falls back to deterministic heuristics when no external model is configured.
+
+## Limitations
+
+This is a simulation benchmark, not a production tax engine.
+
+- GST rules are simplified for benchmarking.
+- Vendor behavior and filing data are synthetic.
+- Fraud logic is intentionally compact and observable enough for RL evaluation.
+- The environment focuses on decision quality, not full statutory coverage.
+
+## Conclusion
+
+`GST-Recon-Env` turns a real compliance workflow into a compact, reproducible RL benchmark with meaningful tradeoffs between accuracy, risk, and ITC behavior. It is OpenEnv-validated, Docker-ready, deployment-ready, and directly relevant to real-world finance operations where decision errors are costly.

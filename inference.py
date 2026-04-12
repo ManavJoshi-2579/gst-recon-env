@@ -1,161 +1,157 @@
-"""Final-hardened Phase 2 inference entrypoint."""
-
-from __future__ import annotations
-
-import asyncio
-import json
 import os
-from typing import Any
+import random
+import yaml
+import json
+import asyncio
+import httpx
 
-try:
-    import httpx
-except Exception:
-    httpx = None
+from client import OpenEnvClient
+from server.gst_recon_env_environment import GSTReconEnv
+from server.models import Action, ActionType
 
-DEFAULT_BASE_URL = os.getenv("OPENENV_BASE_URL", "http://127.0.0.1:8000")
-DEFAULT_TIMEOUT = float(os.getenv("OPENENV_TIMEOUT", "10"))
-MAX_STEPS = 20
-FALLBACK_REWARD = 0.1
-
-
-def log(tag: str) -> None:
-    try:
-        print(f"[{tag}]", flush=True)
-    except Exception:
-        pass
+MAX_STEPS = 50
+TASK_NAME = "hard"
+ENV_NAME = "gst_recon_env"
 
 
-def safe_default_obs() -> dict[str, Any]:
-    return {
-        "echoed_message": "",
-        "message_length": 0,
-        "done": False,
-        "reward": 0.0,
-        "invoice_id": "INV-0001",
-        "action_type": "noop",
-    }
+def _bool_str(value):
+    return "true" if value else "false"
 
+class LocalEnvClient:
+    def __init__(self):
+        self.env = None
 
-def fallback_action(observation: Any) -> dict[str, str]:
-    try:
-        echoed = "ready"
-        if isinstance(observation, dict):
-            echoed = str(observation.get("echoed_message") or "ready")
-    except Exception:
-        echoed = "ready"
-    return {"message": f"fallback:{echoed[:128]}"}
+    async def reset(self, task="easy"):
+        self.env = GSTReconEnv(task=task)
+        return self.env.reset().model_dump()
 
+    async def step(self, action):
+        if self.env is None:
+            raise RuntimeError("Call reset first")
 
-def safe_number(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
+        parsed_action = Action.model_validate(action)
+        obs, reward, done, info = self.env.step(parsed_action)
+        score = _clamp_score(info.get("score") if done else 0.0)
+        return {
+            "observation": obs.model_dump(),
+            "reward": reward,
+            "done": done,
+            "score": score if done else None,
+            "error": self.env.last_error,
+            "info": info,
+        }
 
+    async def aclose(self):
+        return None
 
-def normalize_observation(payload: Any) -> dict[str, Any]:
-    try:
-        if isinstance(payload, dict) and isinstance(payload.get("observation"), dict):
-            observation = dict(payload["observation"])
-            observation.setdefault("done", payload.get("done", False))
-            observation.setdefault("reward", payload.get("reward", 0.0))
-            observation.setdefault("invoice_id", "INV-0001")
-            observation.setdefault("action_type", "noop")
-            return observation
-        if isinstance(payload, dict):
-            observation = dict(payload)
-            observation.setdefault("invoice_id", "INV-0001")
-            observation.setdefault("action_type", "noop")
-            return observation
-    except Exception:
-        pass
-    return safe_default_obs()
+def load_env_config():
+    with open("openenv.yaml", "r") as f:
+        return yaml.safe_load(f)
 
+def _build_openai_client():
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
 
-def get_action(observation: dict[str, Any]) -> dict[str, str]:
-    return fallback_action(observation)
+    import openai
 
+    kwargs = {"api_key": api_key}
+    openai_base_url = os.getenv("OPENAI_BASE_URL")
+    if openai_base_url:
+        kwargs["base_url"] = openai_base_url
+    return openai.OpenAI(**kwargs)
 
-async def safe_post(
-    client: Any, url: str, payload: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    try:
-        response = await client.post(url, json=payload or {})
-        response.raise_for_status()
-        data = response.json()
-        if isinstance(data, dict):
-            return data
-    except Exception:
-        return {}
-    return {}
+def _heuristic_action(obs):
+    invoice = obs.get("current_invoice")
+    if not invoice:
+        return {"type": "submit_report"}
 
+    invoice_id = invoice["id"]
+    has_match = any(entry.get("invoice_id") == invoice_id for entry in obs.get("available_gstr2b", []))
 
-async def main() -> None:
-    log("START")
-    success = True
-    steps = 0
-    rewards: list[str] = []
-    score = 0.0
-    obs = safe_default_obs()
-    action = fallback_action(obs)
+    if invoice.get("gstin", "").startswith("INVALID") or not invoice.get("is_einvoice", True):
+        return {"type": "reject", "invoice_id": invoice_id, "reason": "invalid GSTIN or e-invoice"}
+    if has_match:
+        return {"type": "match", "invoice_id": invoice_id}
+    return {"type": "reject", "invoice_id": invoice_id, "reason": "not found in GSTR-2B"}
+
+def _clamp_score(score):
+    return min(max(float(score or 0.0), 0.0), 1.0)
+
+async def main():
+    api_base = os.getenv("API_BASE_URL", "http://localhost:8000")
+    model_name = os.getenv("MODEL_NAME", "gpt-4o-mini")
+    hf_token = os.getenv("HF_TOKEN")
+    random.seed(int(os.getenv("SEED", "42")))
+    
+    print(f"[START] task={TASK_NAME} env={ENV_NAME} model={model_name}")
+    _ = hf_token
+    
+    client = OpenEnvClient(base_url=api_base)
+    openai_client = _build_openai_client()
 
     try:
-        if httpx is None:
-            log("STEP")
-            score = FALLBACK_REWARD
-            rewards.append(f"{FALLBACK_REWARD:.1f}")
-            print(f"[END] success=true steps=1 score={score:.1f} rewards={','.join(rewards)}", flush=True)
-            return
+        # Reset environment
+        try:
+            obs = await client.reset(task=TASK_NAME)
+        except httpx.ConnectError:
+            await client._client.aclose()
+            client = LocalEnvClient()
+            obs = await client.reset(task=TASK_NAME)
 
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-            try:
-                reset_payload = await safe_post(client, f"{DEFAULT_BASE_URL}/reset")
-                obs = normalize_observation(reset_payload) if reset_payload else safe_default_obs()
-            except Exception:
-                obs = safe_default_obs()
-
-            for _ in range(MAX_STEPS):
-                log("STEP")
-                steps += 1
-                try:
-                    action = get_action(obs)
-                except Exception:
-                    action = fallback_action(obs)
-
-                try:
-                    step_payload = await safe_post(client, f"{DEFAULT_BASE_URL}/step", {"action": action})
-                    if step_payload:
-                        new_obs = normalize_observation(step_payload)
-                        reward = safe_number(step_payload.get("reward", new_obs.get("reward", 0.0)))
-                        done = bool(step_payload.get("done", new_obs.get("done", False)))
-                    else:
-                        new_obs = obs
-                        reward = FALLBACK_REWARD
-                        done = True
-                except Exception:
-                    new_obs = obs
-                    reward = FALLBACK_REWARD
-                    done = True
-
-                obs = new_obs
-                score += reward
-                rewards.append(f"{reward:.1f}")
-                if done:
-                    break
-    except Exception:
-        success = False
-        steps = 0
-        score = 0.0
+        step_n = 0
         rewards = []
-    print(
-        f"[END] success={'true' if success else 'false'} steps={steps} score={score:.1f} rewards={','.join(rewards)}",
-        flush=True,
-    )
+        success = False
+        result = {"score": 0.0}
 
+        while step_n < MAX_STEPS:
+            step_n += 1
+
+            # Generate action using LLM
+            prompt = f"""
+            GST Reconciliation Task. Current state: {json.dumps(obs)}
+            Available actions: match/reject/claim_itc/query_vendor/submit_report
+            Respond with ONLY valid JSON action: {{"type": "action_name", "invoice_id": "INV-001", "reason": "optional"}}
+            """
+
+            try:
+                if openai_client is None:
+                    raise RuntimeError("OPENAI_API_KEY is not set")
+
+                response = openai_client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.0
+                )
+                action_json = response.choices[0].message.content.strip()
+                action = json.loads(action_json)
+            except Exception:
+                action = _heuristic_action(obs)
+
+            # Take step
+            result = await client.step(action)
+            obs = result["observation"]
+            reward = result["reward"]
+            rewards.append(reward)
+
+            action_str = f"{action.get('type', 'unknown')}(id={action.get('invoice_id', 'N/A')})"
+            print(
+                f"[STEP] step={step_n} action={action_str} reward={reward:.2f} "
+                f"done={_bool_str(result['done'])} error={result.get('error') or 'null'}"
+            )
+
+            if result["done"]:
+                result["score"] = _clamp_score(result.get("score"))
+                success = result["score"] >= 0.7
+                break
+
+        rewards_str = "[" + ", ".join(f"{r:.2f}" for r in rewards) + "]"
+        print(
+            f"[END] success={_bool_str(success)} steps={step_n} "
+            f"score={float(result.get('score') or 0.0):.1f} rewards={rewards_str}"
+        )
+    finally:
+        await client.aclose() if hasattr(client, "aclose") else await client._client.aclose()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception:
-        print("[END] success=false steps=0 score=0.0 rewards=", flush=True)
-        raise SystemExit(0)
+    asyncio.run(main())

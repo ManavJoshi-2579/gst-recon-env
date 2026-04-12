@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.log
+.pytest_cache
+.ruff_cache
+.mypy_cache
+server_stdout.log
+server_stderr.log
+uv.lock
+uv.lock.invalid_placeholder

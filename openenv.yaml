@@ -1,7 +1,20 @@
-spec_version: 1
-name: gst_recon_env
-type: space
-runtime: fastapi
-app: server.app:app
-port: 8000
+﻿name: gst_recon_env
+entrypoint: server.app:app
+description: GST invoice reconciliation environment
 
+tasks:
+  - easy
+  - medium
+  - hard
+
+reward_range: [0.0, 1.0]
+
+action_space:
+  action_type: string
+  invoice_id: string
+
+observation_space:
+  current_invoice: object
+  mismatch_flags: list
+  risk_score: float
+  progress: float

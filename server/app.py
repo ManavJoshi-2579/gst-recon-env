@@ -1,90 +1,162 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
+from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
+import os
+import uvicorn
+from .models import Action, Observation
 
-"""
-FastAPI application for the Gst Recon Env Environment.
+from .gst_recon_env_environment import GSTReconEnv
 
-This module creates an HTTP server that exposes the GstReconEnvironment
-over HTTP and WebSocket endpoints, compatible with EnvClient.
+app = FastAPI(title="GST-Recon-Env Server")
 
-Endpoints:
-    - POST /reset: Reset the environment
-    - POST /step: Execute an action
-    - GET /state: Get current environment state
-    - GET /schema: Get action/observation schemas
-    - WS /ws: WebSocket endpoint for persistent sessions
-
-Usage:
-    # Development (with auto-reload):
-    uvicorn server.app:app --reload --host 0.0.0.0 --port 8000
-
-    # Production:
-    uvicorn server.app:app --host 0.0.0.0 --port 8000 --workers 4
-
-    # Or run directly:
-    python -m server.app
-"""
-
-try:
-    from openenv.core.env_server.http_server import create_app
-except Exception as e:  # pragma: no cover
-    raise ImportError(
-        "openenv is required for the web interface. Install dependencies with '\n    uv sync\n'"
-    ) from e
-
-try:
-    from ..models import GstReconAction, GstReconObservation
-    from .gst_recon_env_environment import GstReconEnvironment
-except ImportError:
-    from models import GstReconAction, GstReconObservation
-    from server.gst_recon_env_environment import GstReconEnvironment
+env = None
+task_name: Optional[str] = None
 
 
-# Create the app with web interface and README integration
-app = create_app(
-    GstReconEnvironment,
-    GstReconAction,
-    GstReconObservation,
-    env_name="gst_recon_env",
-    max_concurrent_envs=1,  # increase this number to allow more concurrent WebSocket sessions
-)
+def _empty_observation() -> Observation:
+    return Observation(
+        current_invoice=None,
+        available_gstr2b=[],
+        matched=[],
+        mismatches=[],
+        current_itc=0.0,
+        total_itc_possible=0.0,
+        progress=0.0,
+        warnings=[],
+        step_count=0,
+    )
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8000):
-    """
-    Entry point for direct execution via uv run or python -m.
+def _safe_state() -> Dict[str, Any]:
+    return {
+        "invoices": [],
+        "processed": [],
+        "risk_score": 0.0,
+        "steps": 0,
+    }
 
-    This function enables running the server without Docker:
-        uv run --project . server
-        uv run --project . server --port 8001
-        python -m gst_recon_env.server.app
 
-    Args:
-        host: Host address to bind to (default: "0.0.0.0")
-        port: Port number to listen on (default: 8000)
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    path = request.url.path
+    if path == "/step":
+        return JSONResponse(
+            status_code=200,
+            content=StepResponse(
+                observation=_empty_observation(),
+                reward=0.0,
+                done=True,
+                score=0.0,
+                error="Invalid request payload",
+                info={"score": 0.0, "risk": 0.0, "processed": 0},
+            ).model_dump(),
+        )
+    if path == "/reset":
+        return JSONResponse(status_code=200, content=_empty_observation().model_dump())
+    if path == "/state":
+        return JSONResponse(status_code=200, content=_safe_state())
+    return JSONResponse(status_code=200, content={"error": "Invalid request payload"})
 
-    For production deployments, consider using uvicorn directly with
-    multiple workers:
-        uvicorn gst_recon_env.server.app:app --workers 4
-    """
-    import uvicorn
 
-    uvicorn.run(app, host=host, port=port)
+@app.exception_handler(Exception)
+async def generic_exception_handler(request, exc):
+    path = request.url.path
+    if path == "/step":
+        return JSONResponse(
+            status_code=200,
+            content=StepResponse(
+                observation=_empty_observation(),
+                reward=0.0,
+                done=True,
+                score=0.0,
+                error=str(exc),
+                info={"score": 0.0, "risk": 0.0, "processed": 0},
+            ).model_dump(),
+        )
+    if path == "/reset":
+        return JSONResponse(status_code=200, content=_empty_observation().model_dump())
+    if path == "/state":
+        return JSONResponse(status_code=200, content=_safe_state())
+    return JSONResponse(status_code=200, content={"error": str(exc)})
 
+@app.get("/")
+def health():
+    return {"status": "ok"}
+
+class StepRequest(BaseModel):
+    action: Action
+
+class ResetRequest(BaseModel):
+    task: str = "easy"
+
+class StepResponse(BaseModel):
+    observation: Observation
+    reward: float
+    done: bool
+    score: Optional[float] = None
+    error: Optional[str] = None
+    info: Optional[Dict[str, Any]] = None
+
+@app.post("/reset", response_model=Observation)
+def reset(req: ResetRequest):
+    global env, task_name
+    try:
+        task_name = req.task
+        env = GSTReconEnv(task=req.task)
+        return env.reset()
+    except Exception:
+        env = None
+        task_name = req.task
+        return _empty_observation()
+
+@app.post("/step", response_model=StepResponse)
+def step(req: StepRequest):
+    global env
+    try:
+        if env is None:
+            env = GSTReconEnv(task=task_name or "easy")
+
+        obs, reward, done, info = env.step(req.action)
+        return StepResponse(
+            observation=obs,
+            reward=reward,
+            done=done,
+            score=env._calculate_grader_score() if done else None,
+            error=env.last_error,
+            info=info,
+        )
+    except Exception as exc:
+        return StepResponse(
+            observation=_empty_observation(),
+            reward=0.0,
+            done=True,
+            score=0.0,
+            error=str(exc),
+            info={"score": 0.0, "risk": 0.0, "processed": 0},
+        )
+
+@app.get("/state")
+def get_state():
+    try:
+        if env is None:
+            return _safe_state()
+        return env.state()
+    except Exception:
+        return _safe_state()
+
+@app.get("/tasks")
+def get_tasks():
+    return ["easy", "medium", "hard"]
 
 def main():
-    """Validator-friendly wrapper for direct execution."""
-    import argparse
+    """Entry point for [project.scripts]"""
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--host", default="0.0.0.0")
-    args = parser.parse_args()
-    run_server(host=args.host, port=args.port)
-
+def run_server():
+    main()
 
 if __name__ == "__main__":
     main()
